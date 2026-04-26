@@ -1,0 +1,7 @@
+requests
+pandas
+numpy
+tensorflow-cpu
+joblib
+pytz
+firebase-admin
