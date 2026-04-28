@@ -15,8 +15,6 @@ from firebase_admin import credentials, db, messaging
 # ==============================
 # Firebase Setup
 # ==============================
-
-
 firebase_json = json.loads(os.environ["FIREBASE_JSON"])
 cred = credentials.Certificate(firebase_json)
 
@@ -172,7 +170,6 @@ def update_energy_stats(actual_power, now_dt, now):
 
     co2_increment_kg = energy_increment_kwh * CO2_EMISSION_FACTOR
 
-    # Daily
     daily_ref = db.reference("HIRA/energy_stats/daily").child(today_key)
     daily_old = daily_ref.get() or {}
 
@@ -189,7 +186,6 @@ def update_energy_stats(actual_power, now_dt, now):
         "last_updated": now
     })
 
-    # Monthly
     monthly_ref = db.reference("HIRA/energy_stats/monthly").child(month_key)
     monthly_old = monthly_ref.get() or {}
 
@@ -206,7 +202,6 @@ def update_energy_stats(actual_power, now_dt, now):
         "last_updated": now
     })
 
-    # Lifetime
     lifetime_ref = db.reference("HIRA/energy_stats/lifetime")
     lifetime_old = lifetime_ref.get() or {}
 
@@ -286,9 +281,6 @@ while True:
         now_dt = datetime.now(ist)
         now = now_dt.strftime("%d-%m-%Y %I:%M:%S %p")
 
-        # ==============================
-        # Persistent Daily / Monthly / Lifetime Energy + CO2
-        # ==============================
         energy_stats = update_energy_stats(actual, now_dt, now)
 
         X = latest[[
@@ -301,9 +293,6 @@ while True:
             "relay_count"
         ]]
 
-        # ==============================
-        # ANN Model Selection
-        # ==============================
         if actual < 4.0:
             mode = "LOW_POWER_ANN"
             X_scaled = low_scaler.transform(X)
@@ -313,9 +302,6 @@ while True:
             X_scaled = high_scaler.transform(X)
             predicted = float(high_model.predict(X_scaled, verbose=0)[0][0])
 
-        # ==============================
-        # Efficiency Calculation
-        # ==============================
         if predicted <= 0:
             efficiency = 0.0
             status = "Prediction Error"
@@ -324,9 +310,6 @@ while True:
             efficiency = float(np.clip(efficiency, 0, 150))
             status = get_status(efficiency, mode)
 
-        # ==============================
-        # Fault Detection
-        # ==============================
         fault_data = detect_fault(
             actual,
             predicted,
@@ -338,9 +321,6 @@ while True:
             relay_count
         )
 
-        # ==============================
-        # Send Current AI Data
-        # ==============================
         ai_data = {
             "actual_power": round(actual, 3),
             "predicted_power": round(predicted, 3),
@@ -467,13 +447,27 @@ while True:
         # ==============================
         if fault_data["alarm_level"] in ["ALARM", "CRITICAL"]:
 
-            db.reference("HIRA/alerts").push({
+            alerts_ref = db.reference("HIRA/alerts")
+
+            alerts_ref.push({
                 "title": "🚨 HIRA Critical Energy Alert",
                 "message": fault_data["fault_type"],
                 "details": fault_data["fault_message"],
                 "alarm_level": fault_data["alarm_level"],
                 "time": now
             })
+
+            # ==============================
+            # Keep Last 25 Alert Points
+            # ==============================
+            alert_snapshot = alerts_ref.order_by_key().limit_to_last(30).get()
+
+            if alert_snapshot and len(alert_snapshot) > 25:
+                alert_keys = list(alert_snapshot.keys())
+                alert_keys.sort()
+
+                for k in alert_keys[:len(alert_keys) - 25]:
+                    alerts_ref.child(k).delete()
 
             send_premium_notification(fault_data, now)
 
